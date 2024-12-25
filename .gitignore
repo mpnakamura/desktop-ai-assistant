@@ -1,0 +1,10 @@
+echo "# .gitignore
+node_modules/
+dist/
+credentials/*
+!credentials/.gitkeep
+*.pyc
+__pycache__/
+.env
+.DS_Store
+" > .gitignore
