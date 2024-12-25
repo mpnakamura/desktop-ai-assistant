@@ -1,24 +1,15 @@
-// src/renderer/hooks/useRecording.ts
 import { useState, useCallback, useEffect, useRef } from "react";
 
 interface AudioStream {
   stream: MediaStream | null;
   audioContext: AudioContext | null;
   source: MediaStreamAudioSourceNode | null;
-  processor: ScriptProcessorNode | null;
+  processor: AudioWorkletNode | null;
 }
 
 export const useRecording = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // BlackHole用とマイク用の別々のストリーム管理
-  const blackholeStreamRef = useRef<AudioStream>({
-    stream: null,
-    audioContext: null,
-    source: null,
-    processor: null,
-  });
 
   const micStreamRef = useRef<AudioStream>({
     stream: null,
@@ -30,43 +21,29 @@ export const useRecording = () => {
   const getAudioDevices = async () => {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      console.log("All available devices:", devices);
+      console.log("Available devices:", devices);
 
-      // BlackHole (相手の音声用)
-      const blackholeDevice = devices.find(
-        (device) =>
-          device.kind === "audioinput" && device.label.includes("BlackHole")
-      );
-
-      // デフォルトのマイク (自分の音声用)
+      // マイク (入力用)
       const micDevice = devices.find(
         (device) =>
-          device.kind === "audioinput" &&
-          !device.label.includes("BlackHole") &&
-          !device.label.includes("default")
+          device.kind === "audioinput" && !device.label.includes("default")
       );
 
-      console.log("BlackHole device:", blackholeDevice);
-      console.log("Microphone device:", micDevice);
-
-      if (!blackholeDevice || !micDevice) {
-        throw new Error("必要なオーディオデバイスが見つかりません");
+      if (!micDevice) {
+        throw new Error("マイクデバイスが見つかりません");
       }
 
-      return {
-        blackholeId: blackholeDevice.deviceId,
-        micId: micDevice.deviceId,
-      };
+      console.log("Selected mic device:", micDevice);
+      return { micId: micDevice.deviceId };
     } catch (err) {
-      console.error("デバイス検索エラー:", err);
+      console.error("Device enumeration error:", err);
       throw err;
     }
   };
 
-  const setupAudioStream = async (
-    deviceId: string,
-    streamType: "blackhole" | "mic"
-  ) => {
+  const setupAudioStream = async (deviceId: string) => {
+    console.log("Setting up audio stream for device:", deviceId);
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: { exact: deviceId },
@@ -78,15 +55,39 @@ export const useRecording = () => {
     });
 
     const audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = audioContext.createMediaStreamSource(stream);
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
-    const audioWorkletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+    try {
+      await audioContext.audioWorklet.addModule("./audio-processor.js");
+      console.log("Audio worklet module loaded");
+    } catch (err) {
+      console.error("Failed to load audio worklet:", err);
+      throw err;
+    }
+
+    const source = audioContext.createMediaStreamSource(stream);
+    const audioWorkletNode = new AudioWorkletNode(
+      audioContext,
+      "audio-processor"
+    );
+
     audioWorkletNode.port.onmessage = (event) => {
-      const { inputData, level } = event.data;
-      console.log(`${streamType} audio level:`, level.toFixed(4));
-      // ここにデータ送信処理を追加
+      const { level, audioChunk } = event.data;
+
+      if (audioChunk && Array.isArray(audioChunk)) {
+        console.log("Sending audio data:", {
+          chunkLength: audioChunk.length,
+          timestamp: Date.now(),
+        });
+
+        if (window.electron && window.electron.ipcRenderer) {
+          window.electron.ipcRenderer.send("send-audio-data", {
+            audioBuffer: audioChunk,
+            source: "mic",
+          });
+        }
+      }
     };
+
     source.connect(audioWorkletNode);
     audioWorkletNode.connect(audioContext.destination);
 
@@ -94,62 +95,36 @@ export const useRecording = () => {
       stream,
       audioContext,
       source,
-      processor,
+      processor: audioWorkletNode,
     };
   };
 
   const startRecording = useCallback(async () => {
     try {
       setError(null);
-      const { blackholeId, micId } = await getAudioDevices();
-
-      // BlackHoleストリームのセットアップ
-      console.log("BlackHoleストリームのセットアップ開始");
-      blackholeStreamRef.current = await setupAudioStream(
-        blackholeId,
-        "blackhole"
-      );
+      const { micId } = await getAudioDevices();
 
       // マイクストリームのセットアップ
-      console.log("マイクストリームのセットアップ開始");
-      micStreamRef.current = await setupAudioStream(micId, "mic");
+      micStreamRef.current = await setupAudioStream(micId);
+      console.log("Recording started successfully");
 
       setIsRecording(true);
-      console.log("両方の録音開始成功");
     } catch (err: any) {
-      console.error("録音エラー:", err);
+      console.error("Failed to start recording:", err);
       setError(err.message);
       setIsRecording(false);
-      // エラー時のクリーンアップ
       stopRecording();
     }
   }, []);
 
   const stopRecording = useCallback(() => {
-    console.log("録音停止処理開始");
+    console.log("Stopping recording");
 
-    // BlackHoleストリームの停止
-    if (blackholeStreamRef.current.stream) {
-      blackholeStreamRef.current.stream
-        .getTracks()
-        .forEach((track) => track.stop());
-      blackholeStreamRef.current.processor?.disconnect();
-      blackholeStreamRef.current.source?.disconnect();
-      blackholeStreamRef.current.audioContext?.close().catch(console.error);
-      blackholeStreamRef.current = {
-        stream: null,
-        audioContext: null,
-        source: null,
-        processor: null,
-      };
-    }
-
-    // マイクストリームの停止
     if (micStreamRef.current.stream) {
       micStreamRef.current.stream.getTracks().forEach((track) => track.stop());
       micStreamRef.current.processor?.disconnect();
       micStreamRef.current.source?.disconnect();
-      micStreamRef.current.audioContext?.close().catch(console.error);
+      micStreamRef.current.audioContext?.close().catch(() => {});
       micStreamRef.current = {
         stream: null,
         audioContext: null,
@@ -159,7 +134,6 @@ export const useRecording = () => {
     }
 
     setIsRecording(false);
-    console.log("全ての録音停止完了");
   }, []);
 
   useEffect(() => {
@@ -177,5 +151,3 @@ export const useRecording = () => {
     stopRecording,
   };
 };
-
-export default useRecording;

@@ -1,19 +1,12 @@
-# src/python/backend.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import numpy as np
+from collections import deque
+import time
 from utils.audio_processing import AudioProcessor
-from speech_recognition import SpeechRecognizer
-
-# ロギング設定
-logging.basicConfig(
-    level=logging.DEBUG,  # より詳細なログを有効化
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from speech_recognizer import SpeechRecognizer
 
 app = FastAPI()
 audio_processor = AudioProcessor()
@@ -36,110 +29,155 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info("New WebSocket connection established")
         
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
-        logger.info("WebSocket connection closed")
 
 manager = ConnectionManager()
 
 # 音声バッファ管理
 class DualAudioBuffer:
     def __init__(self):
-        self.blackhole_buffer = []
         self.mic_buffer = []
-        self.CHUNK_SIZE = 16000  # 1秒分のデータ
+        self.text_buffer = deque(maxlen=5)  # 最近の5つの文字起こし結果を保持
+        self.last_chunk_time = time.time()
+        
+        # バッファサイズの設定
+        self.MIN_CHUNK_SIZE = 16000   # 1秒
+        self.MAX_CHUNK_SIZE = 48000   # 3秒
+        self.current_chunk_size = self.MIN_CHUNK_SIZE
+        
+        # 無音検出のパラメータ
+        self.silence_threshold = 0.01
+        self.min_chunk_interval = 1.0  # 最小チャンク間隔（秒）
+        
+    def is_silence(self, data: List[float]) -> bool:
+        """無音区間を検出"""
+        return np.mean(np.abs(data)) < self.silence_threshold
+    
+    def should_process_chunk(self) -> bool:
+        """チャンク処理のタイミングを判断"""
+        current_time = time.time()
+        if current_time - self.last_chunk_time < self.min_chunk_interval:
+            return False
+        return True
 
-    def add_data(self, data: List[float], source: str) -> tuple:
-        if source == 'blackhole':
-            self.blackhole_buffer.extend(data)
-            if len(self.blackhole_buffer) >= self.CHUNK_SIZE:
-                chunk = np.array(self.blackhole_buffer[:self.CHUNK_SIZE], dtype=np.float32)
-                self.blackhole_buffer = self.blackhole_buffer[self.CHUNK_SIZE:]
-                return chunk, 'blackhole'
-        else:  # mic
+    def add_data(self, data: List[float], source: str) -> Tuple[np.ndarray, str]:
+        """音声データをバッファに追加し、必要に応じてチャンクを返す"""
+        if source == 'mic':
             self.mic_buffer.extend(data)
-            if len(self.mic_buffer) >= self.CHUNK_SIZE:
-                chunk = np.array(self.mic_buffer[:self.CHUNK_SIZE], dtype=np.float32)
-                self.mic_buffer = self.mic_buffer[self.CHUNK_SIZE:]
+            
+            # バッファサイズと時間間隔の両方を確認
+            if len(self.mic_buffer) >= self.current_chunk_size and self.should_process_chunk():
+                chunk = np.array(self.mic_buffer[:self.current_chunk_size], dtype=np.float32)
+                self.mic_buffer = self.mic_buffer[self.current_chunk_size:]
+                self.last_chunk_time = time.time()
+                
+                duration = len(chunk) / 16000
+                print(f"Processing chunk: {duration:.2f} seconds")
                 return chunk, 'mic'
+                
         return None, None
+
+    def add_transcription(self, text: str) -> str:
+        """文字起こし結果を追加し、コンテキストを考慮した結果を返す"""
+        if not text:
+            return ""
+            
+        self.text_buffer.append(text)
+        
+        # 最近の結果を結合して重複を除去
+        combined_text = " ".join(self.text_buffer)
+        words = combined_text.split()
+        unique_words = []
+        
+        for word in words:
+            if not unique_words or word != unique_words[-1]:
+                unique_words.append(word)
+                
+        return " ".join(unique_words)
+
+    def get_current_duration(self) -> float:
+        """現在のチャンクサイズの秒数を返す"""
+        return self.current_chunk_size / 16000
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     audio_buffer = DualAudioBuffer()
-    connection_id = id(websocket)
-    logger.debug(f"New connection established. ID: {connection_id}")
+    print("New WebSocket connection established")
     
     try:
         while True:
-            # 受信データのデバッグ出力
             raw_data = await websocket.receive_json()
-            logger.debug(f"Raw data received: {str(raw_data)[:100]}...")  # データの先頭100文字だけ表示
             
             if raw_data.get("type") == "audio":
                 try:
-                    # データ構造の検証
                     if "audioBuffer" not in raw_data:
-                        logger.error(f"Missing audioBuffer in data: {raw_data.keys()}")
+                        print("Missing audioBuffer in data")
                         continue
                         
-                    # 音声データの処理
                     audio_data = np.array(raw_data["audioBuffer"], dtype=np.float32)
                     sample_rate = raw_data.get("sampleRate", 16000)
                     source = raw_data.get("source", "unknown")
                     level = raw_data.get("level", 0.0)
 
-                    logger.debug(f"Processing audio - Source: {source}, Length: {len(audio_data)}, "
-                               f"Sample Rate: {sample_rate}, Level: {level}")
-
-                    # バッファにデータを追加
+                    print(f"Received audio chunk: length={len(audio_data)}, source={source}")
+                    
                     chunk, chunk_source = audio_buffer.add_data(audio_data.tolist(), source)
                     if chunk is not None:
-                        logger.debug(f"Chunk ready from {chunk_source} - Length: {len(chunk)}")
+                        print(f"Processing chunk of size: {len(chunk)}")
+                        processed_audio = speech_recognizer.process_audio_data(chunk, sample_rate)
                         
-                        # 音声認識の処理をここに追加予定
-                        
-                        response_data = {
-                            "type": "transcription",
-                            "data": {
-                                "text": f"Audio from {chunk_source}",
-                                "source": chunk_source,
-                                "level": float(level),
-                                "timestamp": raw_data.get("timestamp", 0)
-                            }
-                        }
-                        await websocket.send_json(response_data)
+                        async for result in speech_recognizer.transcribe_audio(processed_audio):
+                            if "error" in result:
+                                print(f"Transcription error: {result['error']}")
+                                transcription_text = "[Error in transcription]"
+                            else:
+                                transcription_text = result["transcript"]
+                                print(f"Raw transcription result: {transcription_text}")
+                            
+                            if transcription_text and not transcription_text.startswith("[Error"):
+                                # コンテキストを考慮した文字起こし結果を取得
+                                context_aware_text = audio_buffer.add_transcription(transcription_text)
+                                print(f"Context-aware transcription: {context_aware_text}")
+                                
+                                response_data = {
+                                    "type": "transcription",
+                                    "data": {
+                                        "text": context_aware_text,
+                                        "source": chunk_source,
+                                        "level": float(level),
+                                        "timestamp": raw_data.get("timestamp", 0)
+                                    }
+                                }
+                                await websocket.send_json(response_data)
                         
                 except Exception as e:
-                    logger.error(f"Error processing audio data: {str(e)}")
-                    logger.exception(e)
+                    import traceback
+                    print(f"Error processing audio: {str(e)}")
+                    print(traceback.format_exc())
                     continue
     
     except WebSocketDisconnect:
-        logger.info(f"Connection {connection_id} disconnected normally")
+        print("WebSocket disconnected")
     except Exception as e:
-        logger.error(f"Error in connection {connection_id}: {str(e)}")
-        logger.exception(e)
+        print(f"WebSocket error: {str(e)}")
     finally:
         manager.disconnect(websocket)
-        logger.debug(f"Connection {connection_id} cleanup complete")
+        print("WebSocket connection closed")
 
 if __name__ == "__main__":
-    # サーバー設定
     config = uvicorn.Config(
         app=app,
         host="0.0.0.0",
         port=8000,
-        log_level="debug",  # より詳細なログを有効化
-        reload=True  # 開発時のホットリロード
+        log_level="info",
+        reload=True
     )
     
-    # サーバー起動
     server = uvicorn.Server(config)
     try:
         server.run()
     except KeyboardInterrupt:
-        logger.info("Server shutting down...")
+        pass

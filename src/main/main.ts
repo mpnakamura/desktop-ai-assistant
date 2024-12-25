@@ -11,7 +11,7 @@ function initializeWebSocket() {
   wsClient = new WebSocket("ws://localhost:8000/ws");
 
   wsClient.on("open", () => {
-    console.log("WebSocket connection established");
+    // WebSocket接続が確立されたときの処理
   });
 
   wsClient.on("message", (data) => {
@@ -25,13 +25,13 @@ function initializeWebSocket() {
   });
 
   wsClient.on("close", () => {
-    console.log("WebSocket connection closed");
+    // WebSocket接続が閉じられたときの処理
     // 再接続を試みる
     setTimeout(initializeWebSocket, 3000);
   });
 
   wsClient.on("error", (error) => {
-    console.error("WebSocket error:", error);
+    // WebSocketエラー時の処理
   });
 }
 
@@ -78,13 +78,20 @@ app.on("window-all-closed", () => {
 });
 
 // 音声データの受信と転送
-ipcMain.on("audio-data", (event, data) => {
+// main.ts の該当部分
+ipcMain.on("send-audio-data", (event, data) => {
   if (wsClient && wsClient.readyState === WebSocket.OPEN) {
+    const audioFloat32 = new Float32Array(data.audioBuffer);
+    const audioList = Array.from(audioFloat32);
+
     wsClient.send(
       JSON.stringify({
         type: "audio",
-        data: data.buffer,
-        sampleRate: data.sampleRate,
+        audioBuffer: audioList,
+        sampleRate: 16000,
+        source: data.source,
+        level: 0.0,
+        timestamp: Date.now(),
       })
     );
   }

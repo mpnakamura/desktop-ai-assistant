@@ -6,7 +6,8 @@ import AppHeader from "./components/Layout/AppHeader";
 import RecordingControl from "./components/Recording/RecordingControl";
 import TranscriptContainer from "./components/Transcription/TranscriptContainer";
 import AnswerDialog from "./components/Dialog/AnswerDialog";
-import useRecording from "./hooks/useRecording";
+import { useRecording } from "./hooks/useRecording";
+
 
 const App: React.FC = () => {
   const prefersDarkMode = useMediaQuery("(prefers-color-scheme: dark)");
