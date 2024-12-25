@@ -1,9 +1,11 @@
-# requirements.txtの作成
-echo "flask==2.0.1
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+websockets==11.0.3
 google-cloud-speech==2.21.0
-google-cloud-translate==3.12.0
-soundfile==0.10.3.post1
-python-dotenv==0.19.0" > src/python/requirements.txt
-
-# Python依存関係のインストール
-pip install -r src/python/requirements.txt
+google-cloud-storage==2.13.0
+pydantic==2.4.2
+python-dotenv==1.0.0
+numpy==1.24.3
+sounddevice==0.4.6
+soundfile==0.12.1

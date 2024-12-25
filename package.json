@@ -4,10 +4,12 @@
   "description": "Real-time meeting transcription app",
   "main": "dist/main/main.js",
   "scripts": {
-    "start": "tsc -p tsconfig.electron.json && electron .",
-    "dev": "concurrently \"tsc -p tsconfig.electron.json -w\" \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
+    "start": "tsc && electron .",
+    "dev": "concurrently \"npm run start-python\" \"tsc -p tsconfig.electron.json -w\" \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
     "build": "rimraf dist && tsc -p tsconfig.electron.json && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start-python": "source venv/bin/activate && python src/python/backend.py",
+    "postinstall": "python3 -m venv venv && source venv/bin/activate && pip install -r src/python/requirements.txt"
   },
   "dependencies": {
     "react": "^18.2.0",
