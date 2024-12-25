@@ -1,12 +1,19 @@
-# backend.py
-from fastapi import FastAPI, WebSocket, UploadFile, File
+# src/python/backend.py
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import asyncio
-import json
-from typing import Dict, List
+import uvicorn
 import logging
+from typing import List, Dict, Any
+import numpy as np
 from utils.audio_processing import AudioProcessor
 from speech_recognition import SpeechRecognizer
+
+# ロギング設定
+logging.basicConfig(
+    level=logging.DEBUG,  # より詳細なログを有効化
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 audio_processor = AudioProcessor()
@@ -15,71 +22,124 @@ speech_recognizer = SpeechRecognizer()
 # CORS設定
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 本番環境では適切に制限する
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# WebSocket接続を管理
-active_connections: List[WebSocket] = []
+# WebSocket接続管理
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info("New WebSocket connection established")
+        
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info("WebSocket connection closed")
+
+manager = ConnectionManager()
+
+# 音声バッファ管理
+class DualAudioBuffer:
+    def __init__(self):
+        self.blackhole_buffer = []
+        self.mic_buffer = []
+        self.CHUNK_SIZE = 16000  # 1秒分のデータ
+
+    def add_data(self, data: List[float], source: str) -> tuple:
+        if source == 'blackhole':
+            self.blackhole_buffer.extend(data)
+            if len(self.blackhole_buffer) >= self.CHUNK_SIZE:
+                chunk = np.array(self.blackhole_buffer[:self.CHUNK_SIZE], dtype=np.float32)
+                self.blackhole_buffer = self.blackhole_buffer[self.CHUNK_SIZE:]
+                return chunk, 'blackhole'
+        else:  # mic
+            self.mic_buffer.extend(data)
+            if len(self.mic_buffer) >= self.CHUNK_SIZE:
+                chunk = np.array(self.mic_buffer[:self.CHUNK_SIZE], dtype=np.float32)
+                self.mic_buffer = self.mic_buffer[self.CHUNK_SIZE:]
+                return chunk, 'mic'
+        return None, None
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    active_connections.append(websocket)
+    await manager.connect(websocket)
+    audio_buffer = DualAudioBuffer()
+    connection_id = id(websocket)
+    logger.debug(f"New connection established. ID: {connection_id}")
+    
     try:
         while True:
-            # クライアントからの音声データを受信
-            data = await websocket.receive_bytes()
+            # 受信データのデバッグ出力
+            raw_data = await websocket.receive_json()
+            logger.debug(f"Raw data received: {str(raw_data)[:100]}...")  # データの先頭100文字だけ表示
             
-            # 音声データの前処理
-            processed_audio, sample_rate = audio_processor.prepare_for_recognition(data)
-            
-            # ストリーミング認識の実行
-            async for result in speech_recognizer.transcribe_streaming(
-                audio_generator=_audio_generator(processed_audio)
-            ):
-                # 結果をクライアントに送信
-                await websocket.send_json(result)
-                
+            if raw_data.get("type") == "audio":
+                try:
+                    # データ構造の検証
+                    if "audioBuffer" not in raw_data:
+                        logger.error(f"Missing audioBuffer in data: {raw_data.keys()}")
+                        continue
+                        
+                    # 音声データの処理
+                    audio_data = np.array(raw_data["audioBuffer"], dtype=np.float32)
+                    sample_rate = raw_data.get("sampleRate", 16000)
+                    source = raw_data.get("source", "unknown")
+                    level = raw_data.get("level", 0.0)
+
+                    logger.debug(f"Processing audio - Source: {source}, Length: {len(audio_data)}, "
+                               f"Sample Rate: {sample_rate}, Level: {level}")
+
+                    # バッファにデータを追加
+                    chunk, chunk_source = audio_buffer.add_data(audio_data.tolist(), source)
+                    if chunk is not None:
+                        logger.debug(f"Chunk ready from {chunk_source} - Length: {len(chunk)}")
+                        
+                        # 音声認識の処理をここに追加予定
+                        
+                        response_data = {
+                            "type": "transcription",
+                            "data": {
+                                "text": f"Audio from {chunk_source}",
+                                "source": chunk_source,
+                                "level": float(level),
+                                "timestamp": raw_data.get("timestamp", 0)
+                            }
+                        }
+                        await websocket.send_json(response_data)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing audio data: {str(e)}")
+                    logger.exception(e)
+                    continue
+    
+    except WebSocketDisconnect:
+        logger.info(f"Connection {connection_id} disconnected normally")
     except Exception as e:
-        logging.error(f"WebSocket error: {str(e)}")
+        logger.error(f"Error in connection {connection_id}: {str(e)}")
+        logger.exception(e)
     finally:
-        active_connections.remove(websocket)
-
-async def _audio_generator(audio_data):
-    """
-    音声データをチャンクに分割してジェネレータとして提供
-    """
-    chunk_size = 16000  # 1秒分のデータ
-    for i in range(0, len(audio_data), chunk_size):
-        chunk = audio_data[i:i + chunk_size]
-        yield chunk.tobytes()
-        await asyncio.sleep(0.1)  # ストリーミングをシミュレート
-
-@app.post("/upload")
-async def upload_audio(file: UploadFile = File(...)):
-    """
-    音声ファイルをアップロードして一括処理
-    """
-    try:
-        contents = await file.read()
-        processed_audio, sample_rate = audio_processor.prepare_for_recognition(contents)
-        
-        # 文字起こしの実行
-        transcription_results = []
-        async for result in speech_recognizer.transcribe_streaming(
-            audio_generator=_audio_generator(processed_audio)
-        ):
-            if result["is_final"]:
-                transcription_results.append(result)
-        
-        return {"results": transcription_results}
-        
-    except Exception as e:
-        return {"error": str(e)}
+        manager.disconnect(websocket)
+        logger.debug(f"Connection {connection_id} cleanup complete")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # サーバー設定
+    config = uvicorn.Config(
+        app=app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="debug",  # より詳細なログを有効化
+        reload=True  # 開発時のホットリロード
+    )
+    
+    # サーバー起動
+    server = uvicorn.Server(config)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        logger.info("Server shutting down...")

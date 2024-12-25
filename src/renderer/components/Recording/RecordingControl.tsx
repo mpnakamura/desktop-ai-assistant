@@ -15,10 +15,20 @@ import {
   Stop as StopIcon,
   Error as ErrorIcon,
 } from "@mui/icons-material";
-import { useRecording } from "../../hooks/useRecording";
 
-const RecordingControl: React.FC = () => {
-  const { isRecording, error, startRecording, stopRecording } = useRecording();
+interface RecordingControlProps {
+  isRecording: boolean;
+  error: string | null;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
+}
+
+const RecordingControl: React.FC<RecordingControlProps> = ({
+  isRecording,
+  error,
+  onStartRecording,
+  onStopRecording,
+}) => {
   const [showError, setShowError] = React.useState(false);
 
   React.useEffect(() => {
@@ -29,6 +39,14 @@ const RecordingControl: React.FC = () => {
 
   const handleCloseError = () => {
     setShowError(false);
+  };
+
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      onStopRecording();
+    } else {
+      onStartRecording();
+    }
   };
 
   return (
@@ -54,7 +72,7 @@ const RecordingControl: React.FC = () => {
           <Tooltip title={isRecording ? "録音を停止" : "録音を開始"}>
             <IconButton
               color={isRecording ? "error" : "primary"}
-              onClick={isRecording ? stopRecording : startRecording}
+              onClick={handleToggleRecording}
               size="large"
               sx={{
                 position: "relative",

@@ -12,13 +12,15 @@
     "postinstall": "python3 -m venv venv && source venv/bin/activate && pip install -r src/python/requirements.txt"
   },
   "dependencies": {
+    "@emotion/react": "^11.11.0",
+    "@emotion/styled": "^11.11.0",
+    "@mui/icons-material": "^5.11.16",
+    "@mui/material": "^5.13.0",
+    "@types/ws": "^8.5.13",
+    "electron-store": "^8.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "electron-store": "^8.1.0",
-    "@mui/material": "^5.13.0",
-    "@mui/icons-material": "^5.11.16",
-    "@emotion/react": "^11.11.0",
-    "@emotion/styled": "^11.11.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

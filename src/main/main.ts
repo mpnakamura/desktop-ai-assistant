@@ -1,8 +1,39 @@
 // src/main/main.ts
-import { app, BrowserWindow, ipcMain, desktopCapturer } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import path from "path";
+import WebSocket from "ws";
 
 let mainWindow: BrowserWindow | null = null;
+let wsClient: WebSocket | null = null;
+
+// WebSocketクライアントの初期化
+function initializeWebSocket() {
+  wsClient = new WebSocket("ws://localhost:8000/ws");
+
+  wsClient.on("open", () => {
+    console.log("WebSocket connection established");
+  });
+
+  wsClient.on("message", (data) => {
+    // Pythonからの応答をレンダラーに転送
+    if (mainWindow) {
+      mainWindow.webContents.send(
+        "transcription-result",
+        JSON.parse(data.toString())
+      );
+    }
+  });
+
+  wsClient.on("close", () => {
+    console.log("WebSocket connection closed");
+    // 再接続を試みる
+    setTimeout(initializeWebSocket, 3000);
+  });
+
+  wsClient.on("error", (error) => {
+    console.error("WebSocket error:", error);
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -11,7 +42,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: true,
-      sandbox: false, // desktopCapturerを使用するために必要
+      sandbox: false,
       preload: path.join(__dirname, "preload.js"),
     },
   });
@@ -26,38 +57,43 @@ function createWindow() {
   return mainWindow;
 }
 
-// デスクトップキャプチャのソース取得用ハンドラー
-ipcMain.handle("get-audio-sources", async () => {
-  try {
-    const sources = await desktopCapturer.getSources({
-      types: ["window", "screen"],
-      thumbnailSize: { width: 0, height: 0 },
-    });
-    return sources;
-  } catch (error) {
-    console.error("Error getting audio sources:", error);
-    throw error;
-  }
-});
+app.whenReady().then(() => {
+  createWindow();
+  initializeWebSocket();
 
-// 録音状態の管理用ハンドラー
-ipcMain.on("recording-status-change", (event, status) => {
-  console.log("Recording status:", status);
-  if (mainWindow) {
-    mainWindow.webContents.send("recording-status-update", status);
-  }
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
 });
-
-app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
+    if (wsClient) {
+      wsClient.close();
+    }
     app.quit();
   }
 });
 
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
+// 音声データの受信と転送
+ipcMain.on("audio-data", (event, data) => {
+  if (wsClient && wsClient.readyState === WebSocket.OPEN) {
+    wsClient.send(
+      JSON.stringify({
+        type: "audio",
+        data: data.buffer,
+        sampleRate: data.sampleRate,
+      })
+    );
   }
+});
+
+// デバイス一覧の取得
+ipcMain.handle("get-audio-devices", async () => {
+  return mainWindow?.webContents.executeJavaScript(`
+    navigator.mediaDevices.enumerateDevices()
+      .then(devices => devices.filter(device => device.kind === 'audioinput'))
+  `);
 });
