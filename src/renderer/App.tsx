@@ -1,35 +1,40 @@
 // src/renderer/App.tsx
-import React, { useState } from "react";
-import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { CssBaseline, Container, Box } from "@mui/material";
-import AppHeader from "./components/Layout/AppHeader";
-import RecordingControl from "./components/Recording/RecordingControl";
-import TranscriptContainer from "./components/Transcription/TranscriptContainer";
-import AnswerDialog from "./components/Dialog/AnswerDialog";
-import { useRecording } from "./hooks/useRecording";
-import { useTranscription } from "./hooks/useTranscription";
+import React, { useState } from 'react';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
+import {
+  CssBaseline,
+  Box,
+  Container,
+  useMediaQuery
+} from '@mui/material';
+import AppHeader from './components/Layout/AppHeader';
+import RecordingControl from './components/Recording/RecordingControl';
+import TranscriptContainer from './components/Transcription/TranscriptContainer';
+import AnswerDialog from './components/Dialog/AnswerDialog';
+import { useTranscription } from './hooks/useTranscription';
 
 const App: React.FC = () => {
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  const { isRecording, toggleRecording } = useRecording();
+  const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)');
+  const [isDarkMode, setIsDarkMode] = useState(prefersDarkMode);
+  
   const {
     messages,
     selectedQuestion,
     answer,
     isLoadingAnswer,
     handleQuestionClick,
-    setSelectedQuestion,
+    setSelectedQuestion
   } = useTranscription();
 
   // テーマの設定
   const theme = createTheme({
     palette: {
-      mode: isDarkMode ? "dark" : "light",
+      mode: isDarkMode ? 'dark' : 'light',
       primary: {
-        main: "#1976d2",
+        main: '#1976d2',
       },
       secondary: {
-        main: "#dc004e",
+        main: '#dc004e',
       },
     },
   });
@@ -41,19 +46,23 @@ const App: React.FC = () => {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box
-        sx={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}
-      >
+      <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         <AppHeader
           isDarkMode={isDarkMode}
           onToggleTheme={() => setIsDarkMode(!isDarkMode)}
         />
 
-        <Container maxWidth="lg" sx={{ flexGrow: 1, py: 3 }}>
-          <RecordingControl
-            isRecording={isRecording}
-            onToggleRecording={toggleRecording}
-          />
+        <Container 
+          maxWidth="lg" 
+          sx={{ 
+            flexGrow: 1, 
+            py: 3,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2
+          }}
+        >
+          <RecordingControl />
 
           <TranscriptContainer
             messages={messages}
