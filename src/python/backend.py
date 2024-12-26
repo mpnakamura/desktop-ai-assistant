@@ -41,6 +41,7 @@ class DualAudioBuffer:
         self.mic_buffer = []
         self.text_buffer = deque(maxlen=5)  # 最近の5つの文字起こし結果を保持
         self.last_chunk_time = time.time()
+        self.last_transcription = ""  # 最後の文字起こし結果を保持
         
         # バッファサイズの設定
         self.MIN_CHUNK_SIZE = 16000   # 1秒
@@ -60,15 +61,22 @@ class DualAudioBuffer:
         current_time = time.time()
         if current_time - self.last_chunk_time < self.min_chunk_interval:
             return False
-        return True
+            
+        # 無音検出を追加
+        if len(self.mic_buffer) >= self.MIN_CHUNK_SIZE:
+            chunk = np.array(self.mic_buffer[-self.MIN_CHUNK_SIZE:])
+            if self.is_silence(chunk):
+                return True
+                
+        return len(self.mic_buffer) >= self.MAX_CHUNK_SIZE
 
     def add_data(self, data: List[float], source: str) -> Tuple[np.ndarray, str]:
         """音声データをバッファに追加し、必要に応じてチャンクを返す"""
         if source == 'mic':
             self.mic_buffer.extend(data)
             
-            # バッファサイズと時間間隔の両方を確認
-            if len(self.mic_buffer) >= self.current_chunk_size and self.should_process_chunk():
+            # バッファサイズと無音検出の両方を確認
+            if self.should_process_chunk():
                 chunk = np.array(self.mic_buffer[:self.current_chunk_size], dtype=np.float32)
                 self.mic_buffer = self.mic_buffer[self.current_chunk_size:]
                 self.last_chunk_time = time.time()
@@ -80,22 +88,23 @@ class DualAudioBuffer:
         return None, None
 
     def add_transcription(self, text: str) -> str:
-        """文字起こし結果を追加し、コンテキストを考慮した結果を返す"""
-        if not text:
+        """文字起こし結果を追加し、新しい部分のみを返す"""
+        if not text or text == self.last_transcription:
             return ""
             
-        self.text_buffer.append(text)
-        
-        # 最近の結果を結合して重複を除去
-        combined_text = " ".join(self.text_buffer)
-        words = combined_text.split()
-        unique_words = []
-        
-        for word in words:
-            if not unique_words or word != unique_words[-1]:
-                unique_words.append(word)
-                
-        return " ".join(unique_words)
+        # 新しいテキストと最後の文字起こしを比較
+        if text.startswith(self.last_transcription):
+            # 新しい部分のみを抽出
+            new_text = text[len(self.last_transcription):].strip()
+        else:
+            new_text = text
+            
+        if new_text:
+            self.last_transcription = text
+            self.text_buffer.append(new_text)
+            return new_text
+            
+        return ""
 
     def get_current_duration(self) -> float:
         """現在のチャンクサイズの秒数を返す"""
@@ -132,26 +141,24 @@ async def websocket_endpoint(websocket: WebSocket):
                         async for result in speech_recognizer.transcribe_audio(processed_audio):
                             if "error" in result:
                                 print(f"Transcription error: {result['error']}")
-                                transcription_text = "[Error in transcription]"
-                            else:
-                                transcription_text = result["transcript"]
-                                print(f"Raw transcription result: {transcription_text}")
-                            
-                            if transcription_text and not transcription_text.startswith("[Error"):
-                                # コンテキストを考慮した文字起こし結果を取得
-                                context_aware_text = audio_buffer.add_transcription(transcription_text)
-                                print(f"Context-aware transcription: {context_aware_text}")
+                                continue
                                 
-                                response_data = {
-                                    "type": "transcription",
-                                    "data": {
-                                        "text": context_aware_text,
-                                        "source": chunk_source,
-                                        "level": float(level),
-                                        "timestamp": raw_data.get("timestamp", 0)
+                            transcription_text = result.get("transcript", "")
+                            if transcription_text:
+                                # 新しいテキストのみを取得
+                                new_text = audio_buffer.add_transcription(transcription_text)
+                                if new_text:  # 新しいテキストがある場合のみ送信
+                                    print(f"New transcription text: {new_text}")
+                                    response_data = {
+                                        "type": "transcription",
+                                        "data": {
+                                            "text": new_text,
+                                            "source": chunk_source,
+                                            "level": float(level),
+                                            "timestamp": raw_data.get("timestamp", 0)
+                                        }
                                     }
-                                }
-                                await websocket.send_json(response_data)
+                                    await websocket.send_json(response_data)
                         
                 except Exception as e:
                     import traceback

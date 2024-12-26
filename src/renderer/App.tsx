@@ -1,20 +1,38 @@
-// src/renderer/App.tsx
-import React, { useState, useEffect } from "react";
-import { ThemeProvider, createTheme } from "@mui/material/styles";
+import React, { useState, useEffect, useRef } from "react";
 import {
-  CssBaseline,
   Box,
-  Container,
+  AppBar,
+  Toolbar,
+  IconButton,
+  Typography,
+  Paper,
+  Drawer,
+  useTheme,
+  Fab,
+  Badge,
+  Collapse,
+  Zoom,
+  Tooltip,
+  ThemeProvider,
+  createTheme,
+  CssBaseline,
   useMediaQuery,
-  Grid,
 } from "@mui/material";
-import AppHeader from "./components/Layout/AppHeader";
-import RecordingControl from "./components/Recording/RecordingControl";
-import TranscriptContainer from "./components/Transcription/TranscriptContainer";
+import {
+  Mic as MicIcon,
+  Stop as StopIcon,
+  QuestionAnswer as QuestionAnswerIcon,
+  Close as CloseIcon,
+  Settings as SettingsIcon,
+  DarkMode as DarkModeIcon,
+  LightMode as LightModeIcon,
+} from "@mui/icons-material";
 
+import AudioWaveform from "./components/common/AudioWaveform";
+import MessageBubble from "./components/common/MessageBubble";
+import AIResponse from "./components/common/AIResponse";
 import { useRecording } from "./hooks/useRecording";
 import { useGemini } from "./hooks/useGemini";
-import ChatPanel from "./components/Layout/ChatPanel";
 
 interface ChatMessage {
   question: string;
@@ -29,32 +47,60 @@ interface TranscriptMessage {
   isQuestion: boolean;
 }
 
-const App: React.FC = () => {
+const ImprovedApp = () => {
+  // Theme and Dark Mode
   const prefersDarkMode = useMediaQuery("(prefers-color-scheme: dark)");
   const [isDarkMode, setIsDarkMode] = useState(prefersDarkMode);
-  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
-  const { isRecording, error, startRecording, stopRecording } = useRecording();
-  const { answer, loading, error: apiError, fetchAnswer } = useGemini();
 
+  // States
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [showFullTranscript, setShowFullTranscript] = useState(true);
+  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<{
     id: number;
     content: string;
   } | null>(null);
   const [loadingQuestions, setLoadingQuestions] = useState<number[]>([]);
+  const [audioLevel, setAudioLevel] = useState(0);
 
-  // WebSocket からの文字起こし結果を受信
+  // Hooks
+  const { isRecording, error, startRecording, stopRecording } = useRecording();
+  const {
+    answer,
+    loading: aiLoading,
+    error: apiError,
+    fetchAnswer,
+  } = useGemini();
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Audio level simulation when recording
+  useEffect(() => {
+    if (!isRecording) return;
+    const interval = setInterval(() => {
+      setAudioLevel(Math.random() * 0.5 + 0.1);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isRecording]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, chatMessages]);
+
+  // WebSocket transcription results handler
   useEffect(() => {
     const handleTranscriptionResult = (result: any) => {
       if (result.type === "transcription") {
         setMessages((prevMessages) => [
           ...prevMessages,
           {
-            id: result.id || Date.now(), // 一意のIDを使用
+            id: result.id || Date.now(),
             speaker: result.data.speaker,
             content: result.data.text,
             timestamp: new Date().toLocaleTimeString(),
-            isQuestion: false, // 自動検出を無効化
+            isQuestion: false,
           },
         ]);
       }
@@ -65,60 +111,37 @@ const App: React.FC = () => {
         "transcription-result",
         handleTranscriptionResult
       );
-
-      return () => {
-        cleanup();
-      };
+      return () => cleanup();
     }
   }, []);
 
-  // 質問がクリックされたときのハンドラー
-  const handleQuestionClick = (question: string) => {
-    // すでに質問としてマークされている場合は無視
-    // もしくは、ここで再度回答を取得する処理を追加
-  };
-
-  // 質問としてマークされたメッセージのハンドラー
+  // Handle question marking
   const handleQuestionMark = (messageId: number, question: string) => {
-    // メッセージを質問としてマーク
     setMessages((prevMessages) =>
       prevMessages.map((msg) =>
         msg.id === messageId ? { ...msg, isQuestion: true } : msg
       )
     );
-
-    // 現在質問中のメッセージIDを追加
     setLoadingQuestions((prev) => [...prev, messageId]);
-
-    // AIに質問を送信
     setCurrentQuestion({ id: messageId, content: question });
     fetchAnswer(question);
   };
 
-  // fetchAnswer が完了したら chatMessages に追加
+  // Handle AI answer updates
   useEffect(() => {
-    if (currentQuestion && answer) {
-      setChatMessages((prevChats) => [
-        ...prevChats,
-        { question: currentQuestion.content, answer: answer },
-      ]);
-      setLoadingQuestions((prev) =>
-        prev.filter((qid) => qid !== currentQuestion.id)
-      );
-      setCurrentQuestion(null);
-    } else if (currentQuestion && apiError) {
-      // エラーの場合も同様に処理
+    if (currentQuestion && (answer || apiError)) {
       setChatMessages((prevChats) => [
         ...prevChats,
         {
           question: currentQuestion.content,
-          answer: "回答の取得に失敗しました。",
+          answer: answer || "回答の取得に失敗しました。",
         },
       ]);
       setLoadingQuestions((prev) =>
         prev.filter((qid) => qid !== currentQuestion.id)
       );
       setCurrentQuestion(null);
+      setDrawerOpen(true); // Open drawer to show new answer
     }
   }, [answer, apiError, currentQuestion]);
 
@@ -137,52 +160,174 @@ const App: React.FC = () => {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box
-        sx={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}
-      >
-        <AppHeader
-          isDarkMode={isDarkMode}
-          onToggleTheme={() => setIsDarkMode(!isDarkMode)}
-        />
+      <Box sx={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+        <AppBar
+          position="fixed"
+          sx={{ zIndex: (theme) => theme.zIndex.drawer + 1 }}
+        >
+          <Toolbar sx={{ justifyContent: "space-between" }}>
+            <Typography variant="h6">面接アシスタント</Typography>
 
-        <Container
-          maxWidth="xl"
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              {isRecording && (
+                <Typography
+                  variant="body2"
+                  sx={{
+                    animation: "pulse 1.5s infinite",
+                    "@keyframes pulse": {
+                      "0%": { opacity: 1 },
+                      "50%": { opacity: 0.5 },
+                      "100%": { opacity: 1 },
+                    },
+                  }}
+                >
+                  録音中...
+                </Typography>
+              )}
+              <Tooltip title={isRecording ? "録音停止" : "録音開始"}>
+                <IconButton
+                  color="inherit"
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={!!error}
+                >
+                  {isRecording ? <StopIcon /> : <MicIcon />}
+                </IconButton>
+              </Tooltip>
+              <IconButton
+                color="inherit"
+                onClick={() => setIsDarkMode(!isDarkMode)}
+              >
+                {isDarkMode ? <LightModeIcon /> : <DarkModeIcon />}
+              </IconButton>
+            </Box>
+          </Toolbar>
+        </AppBar>
+
+        <Box
           sx={{
             flexGrow: 1,
-            py: 3,
+            height: "100%",
+            pt: "64px",
             display: "flex",
             flexDirection: "column",
-            gap: 2,
           }}
         >
-          <RecordingControl
-            isRecording={isRecording}
-            onStartRecording={startRecording}
-            onStopRecording={stopRecording}
-            error={error}
-          />
+          {/* Audio Waveform */}
+          {isRecording && (
+            <Box sx={{ p: 2 }}>
+              <AudioWaveform
+                audioLevel={audioLevel}
+                isRecording={isRecording}
+              />
+            </Box>
+          )}
 
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <TranscriptContainer
-                messages={messages}
-                onQuestionClick={handleQuestionClick}
-                onQuestionMark={handleQuestionMark}
-                loadingQuestions={loadingQuestions}
+          {/* Messages Area */}
+          <Paper
+            sx={{
+              flex: 1,
+              m: 2,
+              p: 2,
+              overflow: "auto",
+            }}
+          >
+            {messages.map((message) => (
+              <MessageBubble
+                key={message.id}
+                content={message.content}
+                timestamp={message.timestamp}
+                isAI={false}
+                isQuestion={message.isQuestion}
+                confidence={0.9} // Add actual confidence from transcription
+                onMarkAsQuestion={() =>
+                  handleQuestionMark(message.id, message.content)
+                }
               />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <ChatPanel
-                chatMessages={chatMessages}
-                loading={loading}
-                error={apiError}
-              />
-            </Grid>
-          </Grid>
-        </Container>
+            ))}
+            <div ref={messagesEndRef} />
+          </Paper>
+        </Box>
+
+        {/* AI Chat Drawer Button */}
+        <Zoom in={!drawerOpen && chatMessages.length > 0}>
+          <Badge
+            badgeContent={chatMessages.length}
+            color="secondary"
+            sx={{ position: "fixed", right: 20, bottom: 20 }}
+          >
+            <Fab color="primary" onClick={() => setDrawerOpen(true)}>
+              <QuestionAnswerIcon />
+            </Fab>
+          </Badge>
+        </Zoom>
+
+        {/* AI Chat Drawer */}
+        <Drawer
+          anchor="right"
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          sx={{
+            width: 400,
+            flexShrink: 0,
+            "& .MuiDrawer-paper": {
+              width: 400,
+            },
+          }}
+        >
+          <Toolbar />
+          <Box
+            sx={{
+              p: 2,
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                mb: 2,
+              }}
+            >
+              <Typography variant="h6">AI アシスタント</Typography>
+              <IconButton onClick={() => setDrawerOpen(false)}>
+                <CloseIcon />
+              </IconButton>
+            </Box>
+
+            <Box sx={{ flex: 1, overflow: "auto" }}>
+              {chatMessages.map((chat, index) => (
+                <Box key={index} sx={{ mb: 3 }}>
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ mb: 1 }}
+                  >
+                    質問: {chat.question}
+                  </Typography>
+                  <AIResponse
+                    content={chat.answer}
+                    isTyping={aiLoading && index === chatMessages.length - 1}
+                  />
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        </Drawer>
+
+        {error && (
+          <Typography
+            color="error"
+            sx={{ position: "fixed", bottom: 16, left: 16 }}
+          >
+            エラー: {error}
+          </Typography>
+        )}
       </Box>
     </ThemeProvider>
   );
 };
 
-export default App;
+export default ImprovedApp;
